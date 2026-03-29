@@ -1,0 +1,205 @@
+//@version=6
+indicator("ICT Displacement Scanner [EmpArchitect]", overlay=true, max_boxes_count=500, max_labels_count=500)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DISPLACEMENT SCANNER - Detects institutional moves and grades quality
+//
+// This indicator identifies displacement candles (large-body institutional moves)
+// and assigns a Displacement Quality Score (DQS) from 0-100. Higher scores
+// indicate cleaner, stronger directional moves.
+//
+// Open-source by @EmpArchitect
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Detection Parameters
+atrPeriod = input.int(14, "ATR Period", minval=1, group="Detection")
+minBodyRatio = input.float(0.5, "Min Body/Range Ratio", minval=0.1, maxval=1.0, step=0.05, group="Detection")
+minAtrMultiple = input.float(1.0, "Min ATR Multiple", minval=0.5, maxval=5.0, step=0.1, group="Detection")
+minGrade = input.string("B", "Min Grade to Display", options=["A+", "A", "B", "C"], group="Detection")
+
+// Visual Parameters
+maxMarks = input.int(20, "Max Visible Marks", minval=1, maxval=100, group="Visual")
+bullColor = input.color(#14B8A6, "Bullish Color", group="Visual")
+bearColor = input.color(#F59E0B, "Bearish Color", group="Visual")
+showGlow = input.bool(true, "Show Glow Boxes", group="Visual")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DISPLACEMENT QUALITY SCORE (DQS) CALCULATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Basic candle metrics
+body = math.abs(close - open)
+range_ = high - low  // Use range_ to avoid Pine keyword conflict
+bodyRatio = range_ > 0 ? body / range_ : 0
+atr = ta.atr(atrPeriod)
+
+// Directional bias
+isBullish = close > open
+isBearish = close < open
+
+// Check if candle qualifies as displacement
+isQualifying = bodyRatio >= minBodyRatio and body >= atr * minAtrMultiple
+
+// Calculate DQS components (only for qualifying candles)
+var float scaledDQS = na
+var float bodyScore = na
+var float volScore = na
+var float dirScore = na
+var string grade = na
+
+if isQualifying
+    // Component 1: Body dominance (0-30 points)
+    // Measures how much of the candle range is real body vs wicks
+    bodyScore := math.max(0.0, (bodyRatio - 0.5) / 0.45 * 30.0)
+
+    // Component 2: Volatility expansion (0-30 points)
+    // Measures how much larger this move is compared to normal ATR
+    volScore := math.min(30.0, (body / atr - 1.0) / 2.0 * 30.0)
+
+    // Component 3: Directional conviction (0-20 points)
+    // Penalizes wicks against the direction of the move
+    wickRatio = isBullish ? (high - close) / range_ : (close - low) / range_
+    dirScore := (1.0 - wickRatio) * 20.0
+
+    // Total DQS (max 80 points, scaled to 0-100)
+    totalDQS = bodyScore + volScore + dirScore
+    scaledDQS := totalDQS / 80.0 * 100.0
+
+    // Assign letter grade based on score
+    grade := scaledDQS >= 90 ? "A+" :
+             scaledDQS >= 80 ? "A" :
+             scaledDQS >= 65 ? "B" :
+             scaledDQS >= 50 ? "C" : na
+else
+    scaledDQS := na
+    bodyScore := na
+    volScore := na
+    dirScore := na
+    grade := na
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GRADE FILTERING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Convert minimum grade to numeric threshold
+minThreshold = minGrade == "A+" ? 90 :
+               minGrade == "A"  ? 80 :
+               minGrade == "B"  ? 65 :
+               minGrade == "C"  ? 50 : 0
+
+// Check if current candle meets minimum grade requirement
+meetsMinGrade = not na(scaledDQS) and scaledDQS >= minThreshold
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VISUALIZATION - GLOW BOXES & LABELS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Arrays to track boxes and labels for clutter management
+var array<box> glowBoxes = array.new<box>()
+var array<label> gradeLabels = array.new<label>()
+
+if meetsMinGrade and not na(grade)
+    // Calculate glow transparency based on grade
+    // A+ (90-100) → 50% transparency (very visible)
+    // A  (80-89)  → 60% transparency
+    // B  (65-79)  → 70% transparency
+    // C  (50-64)  → 80% transparency
+    glowTransp = scaledDQS >= 90 ? 50 :
+                 scaledDQS >= 80 ? 60 :
+                 scaledDQS >= 65 ? 70 : 80
+
+    // Choose color based on direction
+    glowColor = isBullish ? bullColor : bearColor
+
+    // Create glow box behind the candle (extends 30% above and below)
+    if showGlow
+        // Calculate extended box coordinates
+        boxTop = high + (range_ * 0.3)
+        boxBottom = low - (range_ * 0.3)
+
+        newBox = box.new(
+             left=bar_index - 1,
+             top=boxTop,
+             right=bar_index + 1,
+             bottom=boxBottom,
+             bgcolor=color.new(glowColor, glowTransp),
+             border_color=glowColor,
+             border_width=0,
+             border_style=line.style_solid
+         )
+        array.push(glowBoxes, newBox)
+
+        // Manage box count - delete oldest if exceeding limit
+        if array.size(glowBoxes) > maxMarks
+            box.delete(array.shift(glowBoxes))
+
+    // Create grade label with detailed tooltip
+    // Position above for bearish, below for bullish
+    labelY = isBullish ? low : high
+    labelStyle = isBullish ? label.style_none : label.style_none
+    labelYloc = isBullish ? yloc.belowbar : yloc.abovebar
+
+    // Build tooltip with DQS breakdown
+    tooltip = "DQS: " + str.tostring(scaledDQS, "#.0") + "/100\n" +
+              "Body: " + str.tostring(bodyScore, "#.0") + "/30\n" +
+              "Volatility: " + str.tostring(volScore, "#.0") + "/30\n" +
+              "Conviction: " + str.tostring(dirScore, "#.0") + "/20\n" +
+              "Body Ratio: " + str.tostring(bodyRatio * 100, "#.0") + "%\n" +
+              "ATR Multiple: " + str.tostring(body / atr, "#.0") + "x"
+
+    newLabel = label.new(
+         x=bar_index,
+         y=labelY,
+         text=grade,
+         color=color.new(color.white, 100),  // Transparent background
+         textcolor=glowColor,
+         style=label.style_none,
+         yloc=labelYloc,
+         size=size.normal,
+         tooltip=tooltip
+     )
+    array.push(gradeLabels, newLabel)
+
+    // Manage label count - delete oldest if exceeding limit
+    if array.size(gradeLabels) > maxMarks
+        label.delete(array.shift(gradeLabels))
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CANDLE COLORING - Color displacement candles
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Color the actual candle bars when displacement occurs
+barcolor(meetsMinGrade and not na(grade) ? (isBullish ? bullColor : bearColor) : na)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INFORMATION DISPLAY
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Plot invisible line to show data in status line
+plot(scaledDQS, "DQS", color=color.new(color.white, 100), display=display.status_line)
+
+// Info table - shows displacement count and ATR value
+var table infoTable = table.new(position.top_right, 1, 1, bgcolor=color.new(color.black, 82))
+if barstate.islast
+    table.cell(infoTable, 0, 0, "Displacements: " + str.tostring(array.size(glowBoxes)) + " | ATR(" + str.tostring(atrPeriod) + "): " + str.tostring(atr, "#.0"), text_color=color.new(#F8FAFC, 0), text_size=size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// END OF DISPLACEMENT SCANNER
+//
+// Future enhancements (not included in this version):
+// - Session/kill zone filtering
+// - Multi-timeframe dashboard
+// - FVG chain detection (displacement → FVG → order block)
+// - Statistics panel
+// - Alert conditions
+// - Volume confirmation via request.footprint()
+// ══════════════════════════════════════════════════════════════════════════════
+
+
+
+
+

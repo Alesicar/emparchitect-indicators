@@ -1,0 +1,369 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0
+// https://mozilla.org/MPL/2.0/
+// © EmpArchitect
+// ICT Sessions & Killzones — session ranges with kill zone highlights and analytics
+// No entries, no SL/TP — session context only.
+// v1.0
+
+//@version=6
+indicator("ICT Sessions & Killzones [EmpArchitect]", overlay=true,
+     max_boxes_count=500, max_lines_count=500, max_labels_count=500)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  INPUTS
+// ═══════════════════════════════════════════════════════════════════════
+
+grpSess    = "═══ Sessions ═══"
+i_showAsia = input.bool(true, "Show Asian Session", group=grpSess)
+i_showLdn  = input.bool(true, "Show London Session", group=grpSess)
+i_showNY   = input.bool(true, "Show New York Session", group=grpSess)
+
+i_asiaStart = input.int(0, "Asia Start (UTC hour)", minval=0, maxval=23, group=grpSess)
+i_asiaEnd   = input.int(8, "Asia End (UTC hour)", minval=0, maxval=23, group=grpSess)
+i_ldnStart  = input.int(7, "London Start (UTC hour)", minval=0, maxval=23, group=grpSess)
+i_ldnEnd    = input.int(16, "London End (UTC hour)", minval=0, maxval=23, group=grpSess)
+i_nyStart   = input.int(13, "NY Start (UTC hour)", minval=0, maxval=23, group=grpSess)
+i_nyEnd     = input.int(21, "NY End (UTC hour)", minval=0, maxval=23, group=grpSess)
+
+grpKZ      = "═══ Kill Zones ═══"
+i_showKZ   = input.bool(true, "Show Kill Zones", group=grpKZ,
+     tooltip="Kill Zones are the high-probability windows within each session where institutional activity peaks.")
+i_ldnKZstart = input.int(7, "London KZ Start (UTC)", minval=0, maxval=23, group=grpKZ)
+i_ldnKZend   = input.int(10, "London KZ End (UTC)", minval=0, maxval=23, group=grpKZ)
+i_nyKZstart  = input.int(13, "NY KZ Start (UTC)", minval=0, maxval=23, group=grpKZ)
+i_nyKZend    = input.int(16, "NY KZ End (UTC)", minval=0, maxval=23, group=grpKZ)
+
+grpSB      = "═══ Silver Bullet ═══"
+i_showSB   = input.bool(true, "Show Silver Bullet Windows", group=grpSB,
+     tooltip="ICT Silver Bullet: 3-4am, 10-11am, 2-3pm NY time (UTC-4).")
+i_sbDST    = input.bool(true, "Auto DST Adjustment", group=grpSB,
+     tooltip="Shifts Silver Bullet windows by 1 hour for daylight saving time.")
+
+grpVis     = "═══ Visual ═══"
+i_asiaCl   = input.color(#9333EA, "Asian (Purple)", group=grpVis)
+i_ldnCl    = input.color(#14B8A6, "London (Teal)", group=grpVis)
+i_nyCl     = input.color(#F59E0B, "New York (Amber)", group=grpVis)
+i_kzCl     = input.color(#EF4444, "Kill Zone (Red)", group=grpVis)
+i_sbCl     = input.color(#3B82F6, "Silver Bullet (Blue)", group=grpVis)
+i_textCl   = input.color(#F8FAFC, "Text", group=grpVis)
+i_maxDays  = input.int(5, "Max Days to Show", minval=1, maxval=20, group=grpVis)
+
+grpDash    = "═══ Dashboard ═══"
+i_showDash = input.bool(true, "Show Dashboard", group=grpDash)
+i_showStats = input.bool(true, "Show Session Stats", group=grpDash,
+     tooltip="Shows average range per session as % of ADR and bullish/bearish breakout direction stats.")
+
+// ═══════════════════════════════════════════════════════════════════════
+//  TIME HELPERS
+// ═══════════════════════════════════════════════════════════════════════
+
+utcHour = hour(time, "UTC")
+utcDay  = dayofweek(time, "UTC")
+
+// Session active checks
+bool inAsia = utcHour >= i_asiaStart and utcHour < i_asiaEnd
+bool inLdn  = utcHour >= i_ldnStart and utcHour < i_ldnEnd
+bool inNY   = utcHour >= i_nyStart and utcHour < i_nyEnd
+
+// Kill zone checks
+bool inLdnKZ = utcHour >= i_ldnKZstart and utcHour < i_ldnKZend
+bool inNYKZ  = utcHour >= i_nyKZstart and utcHour < i_nyKZend
+
+// Silver Bullet windows (NY time = UTC-4, or UTC-5 without DST)
+// SB1: 3-4am NY = 7-8 UTC (or 8-9 UTC no DST)
+// SB2: 10-11am NY = 14-15 UTC (or 15-16 UTC no DST)
+// SB3: 2-3pm NY = 18-19 UTC (or 19-20 UTC no DST)
+int sbOffset = i_sbDST ? 4 : 5
+int sb1Start = 3 + sbOffset
+int sb1End   = 4 + sbOffset
+int sb2Start = 10 + sbOffset
+int sb2End   = 11 + sbOffset
+int sb3Start = 14 + sbOffset
+int sb3End   = 15 + sbOffset
+
+bool inSB1 = utcHour >= sb1Start and utcHour < sb1End
+bool inSB2 = utcHour >= sb2Start and utcHour < sb2End
+bool inSB3 = utcHour >= sb3Start and utcHour < sb3End
+bool inSB  = inSB1 or inSB2 or inSB3
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SESSION RANGE TRACKING
+// ═══════════════════════════════════════════════════════════════════════
+
+// Asia
+var float asiaHigh   = na
+var float asiaLow    = na
+var float asiaOpen   = na
+var int   asiaBarStart = na
+var bool  asiaActive = false
+
+// London
+var float ldnHigh    = na
+var float ldnLow     = na
+var float ldnOpen    = na
+var int   ldnBarStart = na
+var bool  ldnActive  = false
+
+// NY
+var float nyHigh     = na
+var float nyLow      = na
+var float nyOpen     = na
+var int   nyBarStart = na
+var bool  nyActive   = false
+
+// Asia session tracking
+if inAsia and not asiaActive
+    // Session just started
+    asiaHigh     := high
+    asiaLow      := low
+    asiaOpen     := open
+    asiaBarStart := bar_index
+    asiaActive   := true
+else if inAsia and asiaActive
+    asiaHigh := math.max(asiaHigh, high)
+    asiaLow  := math.min(asiaLow, low)
+else if not inAsia and asiaActive
+    asiaActive := false
+
+// London session tracking
+if inLdn and not ldnActive
+    ldnHigh     := high
+    ldnLow      := low
+    ldnOpen     := open
+    ldnBarStart := bar_index
+    ldnActive   := true
+else if inLdn and ldnActive
+    ldnHigh := math.max(ldnHigh, high)
+    ldnLow  := math.min(ldnLow, low)
+else if not inLdn and ldnActive
+    ldnActive := false
+
+// NY session tracking
+if inNY and not nyActive
+    nyHigh     := high
+    nyLow      := low
+    nyOpen     := open
+    nyBarStart := bar_index
+    nyActive   := true
+else if inNY and nyActive
+    nyHigh := math.max(nyHigh, high)
+    nyLow  := math.min(nyLow, low)
+else if not inNY and nyActive
+    nyActive := false
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SESSION BOXES — draw on session close
+// ═══════════════════════════════════════════════════════════════════════
+
+// Count drawn boxes to limit to i_maxDays
+var int asiaBoxCount = 0
+var int ldnBoxCount  = 0
+var int nyBoxCount   = 0
+
+// Asia box
+if not inAsia and asiaActive[1] and i_showAsia and not na(asiaHigh) and not na(asiaLow)
+    if asiaBoxCount < i_maxDays
+        box.new(asiaBarStart, asiaHigh, bar_index, asiaLow,
+             border_color=color.new(i_asiaCl, 60), bgcolor=color.new(i_asiaCl, 92),
+             border_width=1, border_style=line.style_dotted)
+        label.new(asiaBarStart, asiaHigh, "ASIA",
+             style=label.style_label_down, color=color.new(i_asiaCl, 85),
+             textcolor=i_asiaCl, size=size.tiny)
+        asiaBoxCount += 1
+
+// London box
+if not inLdn and ldnActive[1] and i_showLdn and not na(ldnHigh) and not na(ldnLow)
+    if ldnBoxCount < i_maxDays
+        box.new(ldnBarStart, ldnHigh, bar_index, ldnLow,
+             border_color=color.new(i_ldnCl, 60), bgcolor=color.new(i_ldnCl, 93),
+             border_width=1, border_style=line.style_solid)
+        label.new(ldnBarStart, ldnHigh, "LONDON",
+             style=label.style_label_down, color=color.new(i_ldnCl, 85),
+             textcolor=i_ldnCl, size=size.tiny)
+        ldnBoxCount += 1
+
+// NY box
+if not inNY and nyActive[1] and i_showNY and not na(nyHigh) and not na(nyLow)
+    if nyBoxCount < i_maxDays
+        box.new(nyBarStart, nyHigh, bar_index, nyLow,
+             border_color=color.new(i_nyCl, 60), bgcolor=color.new(i_nyCl, 93),
+             border_width=1, border_style=line.style_solid)
+        label.new(nyBarStart, nyHigh, "NEW YORK",
+             style=label.style_label_down, color=color.new(i_nyCl, 85),
+             textcolor=i_nyCl, size=size.tiny)
+        nyBoxCount += 1
+
+// Reset box counts on new week
+if utcDay == dayofweek.monday and utcHour == 0 and ta.change(time("D")) != 0
+    asiaBoxCount := 0
+    ldnBoxCount  := 0
+    nyBoxCount   := 0
+
+// ═══════════════════════════════════════════════════════════════════════
+//  KILL ZONE HIGHLIGHTING — bgcolor
+// ═══════════════════════════════════════════════════════════════════════
+
+color kzBg = na
+if i_showKZ
+    if inLdnKZ
+        kzBg := color.new(i_kzCl, 95)
+    else if inNYKZ
+        kzBg := color.new(i_kzCl, 95)
+bgcolor(kzBg)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SILVER BULLET WINDOW MARKERS
+// ═══════════════════════════════════════════════════════════════════════
+
+bool sbStart = i_showSB and inSB and not inSB[1]
+
+if sbStart
+    label.new(bar_index, low, "SB",
+         style=label.style_label_up, color=color.new(i_sbCl, 70),
+         textcolor=i_sbCl, size=size.tiny)
+
+// Silver Bullet background
+color sbBg = i_showSB and inSB ? color.new(i_sbCl, 96) : na
+bgcolor(sbBg)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  SESSION STATISTICS — track ranges for analytics
+// ═══════════════════════════════════════════════════════════════════════
+
+// Track last 20 session ranges for averaging
+var array<float> asiaRanges = array.new<float>()
+var array<float> ldnRanges  = array.new<float>()
+var array<float> nyRanges   = array.new<float>()
+
+// Track breakout direction (close > open = bullish)
+var int asiaBullCount = 0
+var int asiaTotalCount = 0
+var int ldnBullCount  = 0
+var int ldnTotalCount = 0
+var int nyBullCount   = 0
+var int nyTotalCount  = 0
+
+// Record on session close
+if not inAsia and asiaActive[1] and not na(asiaHigh) and not na(asiaLow)
+    float rng = asiaHigh - asiaLow
+    asiaRanges.push(rng)
+    if asiaRanges.size() > 20
+        asiaRanges.shift()
+    asiaTotalCount += 1
+    if close > asiaOpen
+        asiaBullCount += 1
+
+if not inLdn and ldnActive[1] and not na(ldnHigh) and not na(ldnLow)
+    float rng = ldnHigh - ldnLow
+    ldnRanges.push(rng)
+    if ldnRanges.size() > 20
+        ldnRanges.shift()
+    ldnTotalCount += 1
+    if close > ldnOpen
+        ldnBullCount += 1
+
+if not inNY and nyActive[1] and not na(nyHigh) and not na(nyLow)
+    float rng = nyHigh - nyLow
+    nyRanges.push(rng)
+    if nyRanges.size() > 20
+        nyRanges.shift()
+    nyTotalCount += 1
+    if close > nyOpen
+        nyBullCount += 1
+
+// Calculate averages
+float asiaAvgRange = asiaRanges.size() > 0 ? asiaRanges.avg() : 0.0
+float ldnAvgRange  = ldnRanges.size() > 0 ? ldnRanges.avg() : 0.0
+float nyAvgRange   = nyRanges.size() > 0 ? nyRanges.avg() : 0.0
+
+// ADR for percentage calc
+float adrVal = request.security(syminfo.tickerid, "D", ta.sma((high - low)[1], 20), lookahead=barmerge.lookahead_on)
+
+// Session range as % of ADR
+float asiaPctADR = adrVal > 0 ? (asiaAvgRange / adrVal) * 100.0 : 0.0
+float ldnPctADR  = adrVal > 0 ? (ldnAvgRange / adrVal) * 100.0 : 0.0
+float nyPctADR   = adrVal > 0 ? (nyAvgRange / adrVal) * 100.0 : 0.0
+
+// Bullish percentage
+float asiaBullPct = asiaTotalCount > 0 ? (asiaBullCount * 100.0 / asiaTotalCount) : 0.0
+float ldnBullPct  = ldnTotalCount > 0 ? (ldnBullCount * 100.0 / ldnTotalCount) : 0.0
+float nyBullPct   = nyTotalCount > 0 ? (nyBullCount * 100.0 / nyTotalCount) : 0.0
+
+// ═══════════════════════════════════════════════════════════════════════
+//  CURRENT SESSION LABEL
+// ═══════════════════════════════════════════════════════════════════════
+
+string currentSession = inNYKZ ? "NY KILL ZONE" : inLdnKZ ? "LDN KILL ZONE" : inNY ? "NEW YORK" : inLdn ? "LONDON" : inAsia ? "ASIA" : "OFF-SESSION"
+color  currentSessCol = inNYKZ ? i_kzCl : inLdnKZ ? i_kzCl : inNY ? i_nyCl : inLdn ? i_ldnCl : inAsia ? i_asiaCl : color.gray
+
+// ═══════════════════════════════════════════════════════════════════════
+//  BARCOLOR — kill zone bars
+// ═══════════════════════════════════════════════════════════════════════
+
+color barC = na
+if i_showKZ and (inLdnKZ or inNYKZ)
+    barC := color.new(i_kzCl, 60)
+barcolor(barC)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════
+
+var table dash = table.new(position.top_right, 5, 6,
+     bgcolor=color.new(color.black, 82), border_width=0)
+
+if barstate.islast and i_showDash
+    // Header
+    table.cell(dash, 0, 0, "Sessions", text_color=i_textCl, text_size=size.small, text_halign=text.align_left)
+    table.cell(dash, 1, 0, "", text_size=size.tiny)
+    table.cell(dash, 2, 0, "", text_size=size.tiny)
+    table.cell(dash, 3, 0, currentSession, text_color=currentSessCol, text_size=size.small, text_halign=text.align_center)
+    table.cell(dash, 4, 0, "[EmpArchitect]", text_color=i_ldnCl, text_size=size.tiny, text_halign=text.align_right)
+
+    if i_showStats
+        // Column headers
+        table.cell(dash, 0, 1, "", text_size=size.tiny)
+        table.cell(dash, 1, 1, "Avg Range", text_color=color.gray, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(dash, 2, 1, "% ADR", text_color=color.gray, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(dash, 3, 1, "Bull %", text_color=color.gray, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(dash, 4, 1, "Sessions", text_color=color.gray, text_size=size.tiny, text_halign=text.align_center)
+
+        // Asia row
+        table.cell(dash, 0, 2, "ASIA", text_color=i_asiaCl, text_size=size.tiny, text_halign=text.align_left)
+        table.cell(dash, 1, 2, str.tostring(asiaAvgRange, format.mintick), text_color=i_textCl, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(dash, 2, 2, str.tostring(asiaPctADR, "#.0") + "%", text_color=i_textCl, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(dash, 3, 2, str.tostring(asiaBullPct, "#.0") + "%", text_color=asiaBullPct > 50 ? i_ldnCl : i_nyCl, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(dash, 4, 2, str.tostring(asiaTotalCount), text_color=color.gray, text_size=size.tiny, text_halign=text.align_center)
+
+        // London row
+        table.cell(dash, 0, 3, "LDN", text_color=i_ldnCl, text_size=size.tiny, text_halign=text.align_left)
+        table.cell(dash, 1, 3, str.tostring(ldnAvgRange, format.mintick), text_color=i_textCl, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(dash, 2, 3, str.tostring(ldnPctADR, "#.0") + "%", text_color=i_textCl, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(dash, 3, 3, str.tostring(ldnBullPct, "#.0") + "%", text_color=ldnBullPct > 50 ? i_ldnCl : i_nyCl, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(dash, 4, 3, str.tostring(ldnTotalCount), text_color=color.gray, text_size=size.tiny, text_halign=text.align_center)
+
+        // NY row
+        table.cell(dash, 0, 4, "NY", text_color=i_nyCl, text_size=size.tiny, text_halign=text.align_left)
+        table.cell(dash, 1, 4, str.tostring(nyAvgRange, format.mintick), text_color=i_textCl, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(dash, 2, 4, str.tostring(nyPctADR, "#.0") + "%", text_color=i_textCl, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(dash, 3, 4, str.tostring(nyBullPct, "#.0") + "%", text_color=nyBullPct > 50 ? i_ldnCl : i_nyCl, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(dash, 4, 4, str.tostring(nyTotalCount), text_color=color.gray, text_size=size.tiny, text_halign=text.align_center)
+
+        // Silver Bullet status
+        string sbStatus = inSB1 ? "SB1 ACTIVE (3-4am NY)" : inSB2 ? "SB2 ACTIVE (10-11am NY)" : inSB3 ? "SB3 ACTIVE (2-3pm NY)" : "—"
+        color  sbStatCl = inSB ? i_sbCl : color.gray
+        table.cell(dash, 0, 5, "Silver Bullet", text_color=color.gray, text_size=size.tiny, text_halign=text.align_left)
+        table.cell(dash, 1, 5, "", text_size=size.tiny)
+        table.cell(dash, 2, 5, "", text_size=size.tiny)
+        table.cell(dash, 3, 5, sbStatus, text_color=sbStatCl, text_size=size.tiny, text_halign=text.align_center)
+        table.cell(dash, 4, 5, i_sbDST ? "DST:ON" : "DST:OFF", text_color=color.gray, text_size=size.tiny, text_halign=text.align_right)
+
+// ═══════════════════════════════════════════════════════════════════════
+//  ALERTS
+// ═══════════════════════════════════════════════════════════════════════
+
+alertcondition(inLdnKZ and not inLdnKZ[1], "London Kill Zone Open", "London Kill Zone has opened — high-probability trading window active")
+alertcondition(inNYKZ and not inNYKZ[1], "NY Kill Zone Open", "New York Kill Zone has opened — high-probability trading window active")
+alertcondition(sbStart, "Silver Bullet Window", "ICT Silver Bullet window has opened")
+alertcondition(inLdn and not inLdn[1], "London Open", "London session has opened")
+alertcondition(inNY and not inNY[1], "NY Open", "New York session has opened")
