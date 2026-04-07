@@ -1,5 +1,6 @@
 # EmpArchitect — Free TradingView Indicators
 
+These indicators require TradingView. New users get $15 toward any plan.
 12 open-source Pine Script v6 indicators for Smart Money Concepts, risk management, and price action analysis.
 
 ## Indicators
