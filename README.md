@@ -27,6 +27,7 @@
 
 ## Links
 
+- [Get TradingView ($15 off)](https://www.tradingview.com/?aff_id=165347)
 - [TradingView Profile](https://www.tradingview.com/u/EmpArchitect/)
 - [Free SMC Alerts](https://t.me/smc_scanner_free)
 - [Full Scanner](https://emparchitect.whop.com)
@@ -34,8 +35,6 @@
 ## License
 
 All indicators are open-source under [Mozilla Public License 2.0](https://mozilla.org/MPL/2.0/).
-
-These indicators require TradingView. New users get $15 toward any plan.
 
 Built by [@EmpArchitect](https://twitter.com/EmpArchitect)# emparchitect-indicators
 Free open-source TradingView indicators by @EmpArchitect
